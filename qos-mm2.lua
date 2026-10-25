@@ -1,4 +1,4 @@
--- qos-MM2 v0.3.124
+-- qos-MM2 v0.3.125
 -- ] (RightBracket): menu. End: unload. All gameplay switches start OFF.
 -- Prism: https://raw.githubusercontent.com/3xjn/qos-mm2/main/prism.lua
 
@@ -21,7 +21,7 @@ local A = { alive = true, connections = {}, esp = {}, collision = {}, localColli
     config = { murdererESP = false, sheriffESP = false, heroESP = false, innocentESP = false, droppedGunESP=false, tracerMurderer=false,tracerSheriff=false,tracerHero=false,tracerInnocent=false,
         antiAfk = true, antiFling = false, silentGunAim = false, cameraAim = false, showFov = false, farm = false, autoGun = true,
         fov = 160, prediction = 0,
-        farmWalkSpeed = 16, requireRound = true }, version = "0.3.124" }
+        farmWalkSpeed = 16, requireRound = true }, version = "0.3.125" }
 ENV.QOS_MM2 = A
 A.Players = game:GetService("Players")
 A.Run = game:GetService("RunService")
@@ -1846,7 +1846,7 @@ function A.collectorShorterCombatRoute(move,target,origin,goal,path)
         if not A.alive or A.movement~=move or not A.config.farm or move.target~=target then break end
         local alternative
         local ok=pcall(function()
-            alternative=game:GetService("PathfindingService"):CreatePath({AgentRadius=1.25,AgentHeight=5,
+            alternative=A.createPath({AgentRadius=1.25,AgentHeight=5,
                 AgentCanClimb=true,AgentCanJump=true,WaypointSpacing=2,Costs={CollectorRailing=math.huge}})
             A.resources[alternative]=true;alternative:ComputeAsync(origin,candidate.position)
             if alternative.Status~=Enum.PathStatus.Success then return end
@@ -1898,7 +1898,7 @@ function A.planWalk(move, target)
             local raised=goalPosition.Y>A.collectorFeet(move).Y+2
             local modes=raised and {{2,true},{1.25,true},{1,true},{2,false},{1.25,false},{1,false}}or {{2,false},{2,true},{1.25,false},{1.25,true},{1,false},{1,true}}
             for _,mode in ipairs(modes) do
-                path=game:GetService("PathfindingService"):CreatePath({AgentRadius=mode[1],
+                path=A.createPath({AgentRadius=mode[1],
                     AgentHeight=5,AgentCanClimb=true,AgentCanJump=mode[2],WaypointSpacing=2,Costs={CollectorDanger=A.collectorCombatRole and 1 or 50,CollectorRailing=math.huge}})
                 A.resources[path]=true
                 path:ComputeAsync(planOrigin,goalPosition)
@@ -1923,7 +1923,7 @@ function A.planWalk(move, target)
             path,approachGoal=A.collectorShorterCombatRoute(move,target,planOrigin,goalPosition,path)
             if not path then
                 for _,goal in ipairs(A.collectorFiringApproaches(move,target))do
-                    path=game:GetService("PathfindingService"):CreatePath({AgentRadius=1,AgentHeight=5,
+                    path=A.createPath({AgentRadius=1,AgentHeight=5,
                         AgentCanClimb=true,AgentCanJump=true,WaypointSpacing=2,Costs={CollectorRailing=math.huge}})
                     A.resources[path]=true;path:ComputeAsync(planOrigin,goal)
                     if path.Status==Enum.PathStatus.Success then
@@ -2402,7 +2402,7 @@ function A.collectorCoinRoute(move,part,origin,prefetch)
         task.spawn(function()
             local path
             local ok,err=pcall(function()
-                path=game:GetService("PathfindingService"):CreatePath({AgentRadius=mode[1],AgentHeight=5,
+                path=A.createPath({AgentRadius=mode[1],AgentHeight=5,
                     AgentCanClimb=true,AgentCanJump=mode[2],WaypointSpacing=2,
                     Costs={CollectorDanger=50,CollectorRailing=math.huge}})
                 A.resources[path]=true
@@ -3348,7 +3348,7 @@ function A.collectorPlanEscape(move,nearby)
             table.sort(candidates,function(a,b)return a.score>b.score end)
             for i=1,math.min(5,#candidates)do
                 if not A.alive or A.movement~=move then break end
-                local path=game:GetService("PathfindingService"):CreatePath({AgentRadius=1.25,AgentHeight=5,
+                local path=A.createPath({AgentRadius=1.25,AgentHeight=5,
                     AgentCanJump=true,AgentCanClimb=true,WaypointSpacing=2,Costs={CollectorDanger=1,CollectorRailing=math.huge}})
                 A.resources[path]=true
                 local success=pcall(function()path:ComputeAsync(origin,candidates[i].point)end)
@@ -4081,7 +4081,7 @@ function A.collectorEmergencyTeleport(root)
     return A.collectorTeleportToFarCandy(root,threat)
 end
 function A.collectorTeleportRouteDistance(origin,goal)
-    local path=game:GetService("PathfindingService"):CreatePath({AgentRadius=1.25,AgentHeight=5,
+    local path=A.createPath({AgentRadius=1.25,AgentHeight=5,
         AgentCanJump=true,AgentCanClimb=true,WaypointSpacing=4})
     A.resources[path]=true
     local distance
@@ -5441,7 +5441,7 @@ A.button(A.settingsPage,"Export log",function()
     end
 end)
 A.button(A.settingsPage, "Unload qos-MM2 (End)", A.Unload)
--- 0.3.124. R15 movement, free camera, gun hook, knife read, plainer status text.
+-- 0.3.125. CreatePath stays a PathfindingService call; R15 agent size is applied in A.createPath.
 
 function A.r15Profile(character, humanoid, root)
     local airborne = humanoid.FloorMaterial == Enum.Material.Air
@@ -5498,26 +5498,22 @@ function A.collectorPlanOrigin(move)
     return origin, feet
 end
 
-do
-    local service = game:GetService("PathfindingService")
-    local create = service.CreatePath
-    service.CreatePath = function(self, params)
-        local copy = {}
-        for key, value in pairs(params or {}) do copy[key] = value end
-        local character, humanoid, root = A.body(A.player)
-        if character and humanoid and root and humanoid.RigType ~= Enum.HumanoidRigType.R6 then
-            local profile = A.r15Profile(character, humanoid, root)
-            if copy.AgentHeight == 5 or copy.AgentHeight == nil then copy.AgentHeight = profile.height end
-            if copy.AgentRadius == 2 then copy.AgentRadius = profile.radius
-            elseif copy.AgentRadius == 1.25 then copy.AgentRadius = math.clamp((profile.radius + profile.tightRadius) / 2, 0.5, 1.5)
-            elseif copy.AgentRadius == 1 then copy.AgentRadius = profile.tightRadius end
-            if copy.AgentRadius and copy.AgentRadius <= profile.tightRadius + 0.05 and copy.WaypointSpacing == 2 then
-                copy.WaypointSpacing = 1
-            end
-            if copy.AgentCanClimb == nil then copy.AgentCanClimb = true end
+function A.createPath(params)
+    local copy = {}
+    for key, value in pairs(params or {}) do copy[key] = value end
+    local character, humanoid, root = A.body(A.player)
+    if character and humanoid and root and humanoid.RigType ~= Enum.HumanoidRigType.R6 then
+        local profile = A.r15Profile(character, humanoid, root)
+        if copy.AgentHeight == 5 or copy.AgentHeight == nil then copy.AgentHeight = profile.height end
+        if copy.AgentRadius == 2 then copy.AgentRadius = profile.radius
+        elseif copy.AgentRadius == 1.25 then copy.AgentRadius = math.clamp((profile.radius + profile.tightRadius) / 2, 0.5, 1.5)
+        elseif copy.AgentRadius == 1 then copy.AgentRadius = profile.tightRadius end
+        if copy.AgentRadius and copy.AgentRadius <= profile.tightRadius + 0.05 and copy.WaypointSpacing == 2 then
+            copy.WaypointSpacing = 1
         end
-        return create(self, copy)
+        if copy.AgentCanClimb == nil then copy.AgentCanClimb = true end
     end
+    return game:GetService("PathfindingService"):CreatePath(copy)
 end
 
 function A.suspendToolCollision()
@@ -5822,7 +5818,7 @@ function A.collectorTeleportRouteDistance(origin, goal)
     local _, humanoid, root = A.body(A.player)
     local drop = 3
     if humanoid and root then drop = A.r15Profile(A.player.Character, humanoid, root).footOffset end
-    local path = game:GetService("PathfindingService"):CreatePath({
+    local path = A.createPath({
         AgentRadius = 1.25, AgentHeight = 5, AgentCanJump = true, AgentCanClimb = true, WaypointSpacing = 4,
     })
     A.resources[path] = true
