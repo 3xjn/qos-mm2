@@ -1,4 +1,4 @@
--- qos-MM2 v0.3.125
+-- qos-MM2 v0.3.126
 -- ] (RightBracket): menu. End: unload. All gameplay switches start OFF.
 -- Prism: https://raw.githubusercontent.com/3xjn/qos-mm2/main/prism.lua
 
@@ -21,7 +21,7 @@ local A = { alive = true, connections = {}, esp = {}, collision = {}, localColli
     config = { murdererESP = false, sheriffESP = false, heroESP = false, innocentESP = false, droppedGunESP=false, tracerMurderer=false,tracerSheriff=false,tracerHero=false,tracerInnocent=false,
         antiAfk = true, antiFling = false, silentGunAim = false, cameraAim = false, showFov = false, farm = false, autoGun = true,
         fov = 160, prediction = 0,
-        farmWalkSpeed = 16, requireRound = true }, version = "0.3.125" }
+        farmWalkSpeed = 16, requireRound = true }, version = "0.3.126" }
 ENV.QOS_MM2 = A
 A.Players = game:GetService("Players")
 A.Run = game:GetService("RunService")
@@ -2555,11 +2555,25 @@ function A.collectorChooseRoute(root)
             if winner and A.movement==move and A.config.farm and A.collectorCollectingCoins()and A.coinActive(winner.target)
                 and(root.Position-origin).Magnitude<8 and math.abs(root.Position.Y-origin.Y)<=1.8 then
                 local old=A.collectorCoinChoice
-                if old and old~=winner and old.path then A.resources[old.path]=nil;old.path:Destroy()end
-                winner.targetPosition=winner.target.Position;A.collectorCoinChoice=winner
-                A.log("coin_route_choice",{target=winner.target,seconds=winner.seconds,candidates=examined,origin=origin})
-                -- Prepare the following pickup from the expected arrival point.
-                A.collectorPrefetchNext(move,winner)
+                local keepScore=old and (old.score or math.huge) or math.huge
+                if old and move.waypoints and move.target==old.target then
+                    local suffix={};local from=move.root.Position
+                    for i=move.pathIndex or 1,#move.waypoints do suffix[#suffix+1]=move.waypoints[i] end
+                    keepScore=A.collectorCandyScore(from,suffix,A.collectorRouteSeconds(from,suffix))
+                end
+                local keep=old and old~=winner and A.coinActive(old.target) and (A.coinSkip[old.target] or 0)<=os.clock()
+                    and move.target==old.target and (move.waypoints or move.planning) and not move.replan
+                    and winner.score+1.25>=keepScore
+                if keep then
+                    if winner.path then A.resources[winner.path]=nil;winner.path:Destroy() end
+                    A.nextCoinChoice=os.clock()+1.25
+                else
+                    if old and old~=winner and old.path then A.resources[old.path]=nil;old.path:Destroy()end
+                    winner.targetPosition=winner.target.Position;A.collectorCoinChoice=winner
+                    A.log("coin_route_choice",{target=winner.target,seconds=winner.seconds,candidates=examined,origin=origin})
+                    -- Prepare the following pickup from the expected arrival point.
+                    A.collectorPrefetchNext(move,winner)
+                end
             else
                 if A.collectorCoinChoice==winner then A.collectorCoinChoice=nil end
                 if winner and winner.path then A.resources[winner.path]=nil;winner.path:Destroy()end
@@ -2569,23 +2583,31 @@ function A.collectorChooseRoute(root)
     if valid then
         cached.score=A.collectorCandyScore(origin,cached.waypoints,cached.seconds)
         local along=A.collectorCandyAlongRoute(move,origin,cached)
-        if along then return along,(along.Position-origin).Magnitude end
+        if along and (along==move.target or not move.waypoints) then
+            return along,(along.Position-origin).Magnitude
+        end
     end
     if direct then
-        local remaining=valid and cached.score or math.huge
-        if valid and move.target==cached.target and move.waypoints then
+        local remaining=math.huge
+        if move.waypoints and move.target and A.coinActive(move.target) and (A.coinSkip[move.target] or 0)<=now then
             local suffix={}
             for i=move.pathIndex or 1,#move.waypoints do suffix[#suffix+1]=move.waypoints[i]end
             remaining=A.collectorCandyScore(origin,suffix,A.collectorRouteSeconds(origin,suffix))
+        elseif valid and cached then remaining=cached.score end
+        local committed=move.target and move.target~=direct and A.coinActive(move.target)
+            and (A.coinSkip[move.target] or 0)<=now and (move.waypoints or move.planning) and not move.replan
+        -- A stale route sample must not hand the target to whichever coin is closest this frame.
+        local better=directScore+1.25<remaining
+        if committed and not move.waypoints then better=bestDirect<=4 end
+        if not committed or better or (cached and cached.target==direct and not move.waypoints) then
+            return direct,bestDirect
         end
-        -- Small hysteresis avoids swapping between two adjacent pickups each frame.
-        if not valid or cached.target==direct or directScore+0.06<remaining then return direct,bestDirect end
     end
     if valid and move.target~=cached.target and A.coinActive(move.target)
         and(A.coinSkip[move.target]or 0)<=now and move.waypoints and not move.replan then
         local suffix={};for i=move.pathIndex or 1,#move.waypoints do suffix[#suffix+1]=move.waypoints[i]end
         local remaining=A.collectorCandyScore(origin,suffix,A.collectorRouteSeconds(origin,suffix))
-        if cached.score+0.5>=remaining then return move.target,(move.target.Position-origin).Magnitude end
+        if cached.score+1.25>=remaining then return move.target,(move.target.Position-origin).Magnitude end
     end
     if valid then return cached.target,(cached.target.Position-origin).Magnitude end
     local current=move.target
@@ -5243,10 +5265,23 @@ function A.farmStep(dt)
     local speed = math.min(m.walkSpeed, math.clamp(A.config.farmWalkSpeed, 4, 16))
     if speed ~= m.humanoid.WalkSpeed then m.humanoid.WalkSpeed = speed; m.appliedWalkSpeed = speed end
     if m.target~=nearest then
-        A.log("target_selected",{target=nearest,position=nearest.Position,combat=A.collectorCombatRole})
-        A.collectorCoast(m)
-        m.target = nearest; m.arrivedAt = nil; m.replan = false; m.nextPlanAt=0; m.exhaustedRoutes=0; m.threatBlocks=0; m.routeStartedAt=os.clock()
-    end
+        local coinHunt=not A.collectorCombatRole or A.collectorCollectingCoins()
+        local currentLive=m.target and A.coinActive(m.target) and (A.coinSkip[m.target] or 0)<=os.clock()
+        local newDistance=(nearest.Position-root.Position).Magnitude
+        local oldDistance=m.target and (m.target.Position-root.Position).Magnitude or math.huge
+        local muchCloser=newDistance+6<oldDistance and newDistance<8
+        local routeLive=(m.waypoints or m.planning) and not m.replan
+        if coinHunt and currentLive and routeLive and not muchCloser then
+            if m.pendingTarget~=nearest then m.pendingTarget,m.pendingTargetAt=nearest,os.clock() end
+            if os.clock()-(m.pendingTargetAt or 0)<0.6 then nearest=m.target end
+        end
+        if m.target~=nearest then
+            m.pendingTarget=nil
+            A.log("target_selected",{target=nearest,position=nearest.Position,combat=A.collectorCombatRole})
+            A.collectorCoast(m)
+            m.target = nearest; m.arrivedAt = nil; m.replan = false; m.nextPlanAt=0; m.exhaustedRoutes=0; m.threatBlocks=0; m.routeStartedAt=os.clock()
+        end
+    elseif m.pendingTarget then m.pendingTarget=nil end
     local target = m.target
     if not target then return end
     local offset = target.Position - root.Position
@@ -5441,7 +5476,7 @@ A.button(A.settingsPage,"Export log",function()
     end
 end)
 A.button(A.settingsPage, "Unload qos-MM2 (End)", A.Unload)
--- 0.3.125. CreatePath stays a PathfindingService call; R15 agent size is applied in A.createPath.
+-- 0.3.126. A walked coin route stays until another pickup is clearly shorter.
 
 function A.r15Profile(character, humanoid, root)
     local airborne = humanoid.FloorMaterial == Enum.Material.Air
